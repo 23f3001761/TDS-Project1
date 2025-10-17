@@ -5,3 +5,8 @@ requests
 openai
 python-multipart
 python-dotenv
+pandas
+numpy
+opencv-python
+pytesseract
+beautifulsoup4

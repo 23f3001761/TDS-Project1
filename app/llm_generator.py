@@ -1,309 +1,340 @@
 import openai
+import pandas as pd
+import numpy as np
 import csv
 import io
 import os
 from dotenv import load_dotenv
 from file_handling import process_attachments
+import cv2
+import pytesseract
+import requests
 
 load_dotenv()
 
-openai.api_key = os.getenv("OPENAI_API_KEY")
+api_key = os.getenv("OPENAI_API_KEY")
+api_url='https://aipipe.org/openai/v1/chat/completions'
 
-def generate_app_code(brief, attachments):
+def generate_app_code(brief, file_paths,image_present,image_data):
 
-    use_mock=True
+    use_mock=False
     if use_mock:
         print("Sending the mock llm response")
         html=f"<html><body><h1>Mock App for : {brief} </h1><img src='sample.png'ī /></body></html>"
         return {
             "index.html":html.encode('utf-8')
         }
-
-    if attachments!=None and attachments!=[]:
+    
+    if file_paths:
+    
         print("Starting to process attachments")
-        files_text, summary, files_binary = process_attachments(attachments)
+        file_info = process_attachments(file_paths)
         print("Received processed attachments")
 
-        print("Creating attachment_info")
+        print('file info :',file_info)
+
         # Build attachment info snippet for the prompt
-        attachment_info_lines = []
-        # Include text files with first 10 lines or 500 chars snippet
-        for fname, content in files_text.items():
+        data_description = {}
 
-            if fname.lower().endswith(".csv"):
-                try:
-                    reader = csv.reader(io.StringIO(content))
-                    headers = next(reader, [])
-                    snippet_lines = content.splitlines()[:10]
-                    snippet = "\n".join(snippet_lines)
-                    if len(snippet) > 500:
-                        snippet = snippet[:500] + "..."
-                    attachment_info_lines.append(
-                        f"CSV file '{fname}':\n- Columns: {headers}\n{snippet}"
-                    )
-                except Exception as e:
-                    attachment_info_lines.append(
-                        f"CSV file '{fname}': could not read schema ({str(e)})"
-                    )
+        for filename, data in file_info.items():
+                if isinstance(data, pd.DataFrame):
+                    data_description[filename] = {
+                        "type": "DataFrame",
+                        "shape": data.shape,
+                        "columns": list(data.columns),
+                        "sample": data.head(3).to_dict(orient="records")
+                    }
+                elif isinstance(data, dict):
+                    data_description[filename] = {
+                        "type": "Dictionary",
+                        "keys": list(data.keys()) if data else []
+                    }
+                elif isinstance(data, list):
+                    data_description[filename] = {
+                        "type": "List",
+                        "length": len(data),
+                        "sample": data[:2] if len(data) > 0 else []
+                    }
+                elif isinstance(data, str):
+                    data_description[filename] = {
+                        "type": "String",
+                        "length": len(data),
+                        "sample": data if len(data) <= 200 else data[:200] + "..."
+                    }
+                elif isinstance(data, np.ndarray):
+                    try:
+                        # Preprocess image for OCR
+                        gray = cv2.cvtColor(data, cv2.COLOR_BGR2GRAY)
+                        blur = cv2.GaussianBlur(gray, (5, 5), 0)
+                        thresh = cv2.adaptiveThreshold(
+                            blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                            cv2.THRESH_BINARY_INV, 11, 2
+                        )
 
-            else:
+                        # Run OCR
+                        custom_config = r'--oem 3 --psm 6'
+                        ocr_text = pytesseract.image_to_string(thresh, config=custom_config)
+
+                        data_description[filename] = {
+                            "type": "Image",
+                            "ocr_text_sample": ocr_text if len(ocr_text) <= 200 else ocr_text[:200] + "...",
+                            "info": "OCR processed with Tesseract"
+                        }
+
+                    except Exception as e:
+                        data_description[filename] = {
+                            "type": "Image",
+                            "error": "Available for processing"
+                        }
 
 
-                snippet = "\n".join(content.splitlines()[:10])
-                if len(snippet) > 500:
-                    snippet = snippet[:500] + "..."
-                attachment_info_lines.append(f"Text file '{fname}':\n{snippet}")
-        # Include summary lines for binary (images) and skipped files from summary
-        # The summary string already has info for images and skipped binaries
-        if summary:
-            attachment_info_lines.append("\nBinary/Other files info:\n" + summary)
+                else:
+                    data_description[filename] = {
+                        "info": "Available for processing"
+                    }
 
-        attachment_info = "\n\n".join(attachment_info_lines) if attachment_info_lines else "None"
-    else:
-        attachment_info="None"
     
-    print("Finished creating attachment_info")
-    print("attachment_info:", attachment_info)
+    else:
+        data_description="None"
+    
+    print("Finished creating data description")
+    print("data_description:", data_description)
 
 
 
-
-    # attachment_info = "\n".join([
-    #     f"- {a['name']} (data URI provided)" for a in attachments
-    # ]) if attachments else "None"
 
 
     prompt = f"""Build a minimal web app for this brief: {brief} 
-    Attachments (may be needed in the app logic or UI):{attachment_info} 
-    Return ONLY the complete content of a single file named 'index.html' as plain text with no explanations. Do NOT return any JSON or additional files."""
+    A Sample of the Attachments (may be needed in the app logic or UI):{data_description}
+    Use the sample only to understand the structure/format.
+    The full attachment files will be available in the same directory as index.html, and should be fetched via JavaScript on page load.
+    Do not require the user to trigger a fetch unless the brief requires interactivity.
+    Return ONLY the complete content of a single file named 'index.html' as plain text with no explanations. Do NOT return any JSON or additional files. Include all necessary HTML, CSS, and JavaScript inline.
+    If external libraries are used, load them correctly and ensure to use the latest stable versions to generate up-to-date, working code.
+    Make sure the code has NO syntax errors."""
 
     print("Final prompt:",prompt)
 
     try:
-        #clean llm response
-        def clean_llm_response(resp_text: str) -> str:
-        # Remove markdown code fences if present
-            if resp_text.startswith("```"):
-                # remove first line and last line if triple backticks
-                lines = resp_text.splitlines()
-                if lines[-1].strip() == "```":
-                    lines = lines[1:-1]
-                else:
-                    lines = lines[1:]
-                return "\n".join(lines).strip()
-            return resp_text.strip()
-
-        MINIMAL_HTML="""<!DOCTYPE html>
-        <html><head><title>Fallback App</title></head><body><h1>Failed to generate app</h1></body></html>"""
 
 
         print("Sending the llm prompt")
 
-        resp = openai.ChatCompletion.create(
-            model="gpt-4",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0
-        )
-        raw_code = resp.choices[0].message.content
-        print("Received llm response")
+      
 
-        print("Sending llm response for cleaning")
-        code=clean_llm_response(raw_code)
-        print("Recieved Cleaned llm response")
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer{api_key}"
+        }
 
-        print("Validating html in the llm response")
-        if "<html" not in code.lower():
-            print("Warning: LLM did not return valid HTML, using fallback")
+        if image_present==True:
+            content=[{ "type": "text", "text": prompt }]
+            for i in image_data:
+                content.append({"type": "image_url","image_url": {"url":i['url']}})
+                
+            data={
+                "model": "gpt-5-mini",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": content     
+                        
+                    }
+                ],    
+            }
+            print("Inside image version of the model request",flush=True)
+            print("content:",content)
+
+        else:
+            data={
+                "model": "gpt-5-mini",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],   
+            }
+            print("Inside non-image version of the model request",flush=True)
+            
+        
+        response=requests.post(api_url, headers=headers, json=data)
+        if response.status_code==200:
+            code = response.json().get('choices',[])[0].get('message',{}).get('content',"")
+
+            return code
+        else:
+            print(f"Error {response.status_code}: {response.text}")
+            MINIMAL_HTML="""<!DOCTYPE html>
+            <html><head><title>Fallback App</title></head><body><h1>The fallback app for the task</h1></body></html>"""
             code = MINIMAL_HTML
+            return code
 
-        return {"index.html": code.encode("utf-8")}
+
     except:
-        print("OpenAI error")
+        print("OpenAI error",flush=True)
+        print("Status code:", response.status_code)
+        print("Reason:", response.reason)
+        print("Response body:", response.text)  # raw response
+        MINIMAL_HTML="""<!DOCTYPE html>
+        <html><head><title>Fallback App</title></head><body><h1>Failed to generate app</h1></body></html>"""
         code = MINIMAL_HTML
-        return {"index.html": code.encode("utf-8")}
+        return code
 
 
-def revise_app_code(brief, attachments, existing_files):
-    use_mock=True
+def revise_app_code(brief, file_paths, html_content,image_present,image_data,repo_url,first_brief):
+
+    use_mock=False
     if use_mock:
         print("Sending the mock llm response")
         html=f"<html><body><h1>Mock App for : {brief} </h1><h3>Modified second round of requests</h3></body></html>"
-        return {
-            "index.html":html.encode('utf-8')
-        }
+        return html
 
 
-    files_text, summary, files_binary = process_attachments(attachments)
-
-    # Build attachment info snippet for the prompt
-    attachment_info_lines = []
-    # Include text files with first 10 lines or 500 chars snippet
-    for fname, content in files_text.items():
-        snippet = "\n".join(content.splitlines()[:10])
-        if len(snippet) > 500:
-            snippet = snippet[:500] + "..."
-        attachment_info_lines.append(f"Text file '{fname}':\n{snippet}")
-    # Include summary lines for binary (images) and skipped files from summary
-    # The summary string already has info for images and skipped binaries
-    if summary:
-        attachment_info_lines.append("\nBinary/Other files info:\n" + summary)
-
-    attachment_info = "\n\n".join(attachment_info_lines) if attachment_info_lines else "None"
+    #files_text, summary, files_binary = process_attachments(attachments)
 
 
 
-    #attachment_info = decode_attachments(attachments)
-
-    context = "\n".join([f"--- {name} ---\n{content}" for name, content in existing_files.items()])
-
-    prompt = f"""
-    You are given a web application project with the following files:
-
-    {context}
-
-    Your task is to revise this project based on the following new brief:
-    "{brief}"
-
-    Make improvements or feature additions accordingly.
-
-    Attachments:
-    {attachment_info}
-
-    Return only a single file."""
-
-    resp = openai.ChatCompletion.create(
-        model="gpt-4",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0
-    )
-
-    updated_code = resp.choices[0].message.content
-    return {"index.html": updated_code.encode("utf-8")}
+    if file_paths:
     
+        print("Starting to process attachments")
+        file_info = process_attachments(file_paths)
+        print("Received processed attachments")
 
-# Absolutely — you're thinking about this the right way.
+        # Build attachment info snippet for the prompt
+        data_description = {}
 
-# Since the **file types aren't known ahead of time**, you need a general-purpose handler that:
+        for filename, data in file_info.items():
+                if isinstance(data, pd.DataFrame):
+                    data_description[filename] = {
+                        "type": "DataFrame",
+                        "shape": data.shape,
+                        "columns": list(data.columns),
+                        "sample": data.head(3).to_dict(orient="records")
+                    }
+                elif isinstance(data, dict):
+                    data_description[filename] = {
+                        "type": "Dictionary",
+                        "keys": list(data.keys()) if data else []
+                    }
+                elif isinstance(data, list):
+                    data_description[filename] = {
+                        "type": "List",
+                        "length": len(data),
+                        "sample": data[:2] if len(data) > 0 else []
+                    }
+                elif isinstance(data, str):
+                    data_description[filename] = {
+                        "type": "String",
+                        "length": len(data),
+                        "sample": data if len(data) <= 200 else data[:200] + "..."
+                    }
+                elif isinstance(data, np.ndarray):
+                    try:
+                        reader = easyocr.Reader(['en'])
+                        # Preprocess image for OCR
+                        gray = cv2.cvtColor(data, cv2.COLOR_BGR2GRAY)
+                        blur = cv2.GaussianBlur(gray, (5, 5), 0)
+                        thresh = cv2.adaptiveThreshold(
+                            blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                            cv2.THRESH_BINARY_INV, 11, 2
+                        )
 
-# * Dynamically detects common file types from attachments
-# * Decodes the base64 content (if appropriate)
-# * Injects the relevant parts into the **LLM prompt**, in a usable and safe format
+                        result = reader.readtext(thresh)
+                        # Extract just text parts and join them
+                        ocr_text = " ".join([res[1] for res in result])
 
-# ---
+                        data_description[filename] = {
+                            "type": "Image",
+                            "ocr_text_sample": ocr_text if len(ocr_text) <= 200 else ocr_text[:200] + "...",
+                            "info": "OCR processed with Easyocr"
+                        }
 
-# ## ✅ Goal: Generic attachment handler
+                    except Exception as e:
+                        data_description[filename] = {
+                            "type": "Image",
+                            "error": f"OCR failed: {str(e)}"
+                        }
+                else:
+                    data_description[filename] = {
+                        "type": type(data).__name__,
+                        "info": "Available for processing"
+                    }
 
-# This should:
+    
+    else:
+        data_description="None"
+    
+    print("Finished creating attachment_info")
+    print("attachment_info:", data_description)
+  
 
-# 1. Detect the file type (`.md`, `.csv`, `.txt`, maybe `.json`)
-# 2. Decode the data URI to get the actual content
-# 3. Return a string block you can embed into a prompt
-# 4. Skip or describe files that aren’t readable (e.g., `.png`, `.zip`)
+    
+    prompt = f"""
+    You previously generated a minimal web app with the following brief: "{first_brief}"
+    Here is a sample of the index.html file generated:
+    {html_content} 
+    Now, update only the index.html file by incorporating the new requirements below, while still respecting the original brief and structure:
+    "{brief}"
+    A Sample of the Attachments (may be needed in app logic or UI):
+    {data_description}
+    The entire attachment will be in the same directory as the index.html file available through Javascript fetch requests.
+    Return ONLY the complete content of a single file named 'index.html' as plain text with no explanations. Do NOT return any JSON or additional files. Include all necessary HTML, CSS, and JavaScript inline.
+    If external libraries are used, use the latest stable versions to generate up-to-date, working code. 
+    **DO NOT use deprecated syntax.**
+    Always use jsDelivr to load external libraries unless the brief explicitly instructs otherwise.
+    Ensure all JavaScript regex literals are syntactically valid. 
+    For splitting text by lines, use ONLY **text.split(/\r?\n/)** IF REQUIRED.
+    IF marked library is used, DO NOT use marked() 
+    Make sure the code has NO syntax errors."""
 
-# ---
 
-# ## ✅ Example: Generalized Attachment Decoder for LLM Prompts
+    print("prompt:",prompt)
 
-# ````python
-# import base64
-# import re
+    try:
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer{api_key}"
+        }
+    
+        if image_present==True:
+            content=[{ "type": "text", "text": prompt }]
+            for i in image_data:
+                content.append({"type": "image_url","image_url": {"url":i['url']}})
+                
+            data={
+                "model": "gpt-5-nano",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": content     
+                        
+                    }
+                ], 
+            }
 
-# def decode_attachments_for_prompt(attachments, max_chars=1000):
-#     result = []
-#     for att in attachments:
-#         name = att.get("name", "unknown")
-#         url = att.get("url", "")
-        
-#         # Match base64-encoded data URIs
-#         match = re.match(r"data:.*?;base64,(.*)", url)
-#         if not match:
-#             result.append(f"- {name}: Unsupported or missing data URI")
-#             continue
+        else:
+            data={
+                "model": "gpt-5-nano",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],  
+            }
+    
+        response=requests.post(api_url, headers=headers, json=data)
+        if response.status_code==200:
+            code = response.json().get('choices',[])[0].get('message',{}).get('content',"")
+    
+            return code
+        else:
+            code="""<!DOCTYPE html>
+            <html><head><title>Fallback App</title></head><body><h1>The fallback app for round-2</h1></body></html>"""
+            return code
 
-#         try:
-#             content = base64.b64decode(match.group(1)).decode("utf-8", errors="ignore")
-#         except Exception:
-#             result.append(f"- {name}: Could not decode")
-#             continue
-
-#         # Clean up very long files for prompt safety
-#         if len(content) > max_chars:
-#             content = content[:max_chars] + "\n... (truncated)"
-
-#         # Determine how to format based on file extension
-#         ext = name.split('.')[-1].lower()
-#         if ext in ["md", "txt", "csv", "json", "py", "html"]:
-#             block = f"File: {name}\n```\n{content}\n```"
-#         else:
-#             block = f"File: {name}\n(Unsupported or non-text file — not included in prompt)"
-
-#         result.append(block)
-
-#     return "\n\n".join(result)
-# ````
-
-# ---
-
-# ### 🧠 Example usage in LLM prompt:
-
-# ```python
-# file_snippets = decode_attachments_for_prompt(req.attachments)
-
-# prompt = f"""
-# You are to build a web application based on the following brief:
-
-# {req.brief}
-
-# Here are the input files provided as attachments:
-# {file_snippets}
-
-# Use these files as needed to complete the task.
-
-# Return a single file: `index.html`
-# """
-# ```
-
-# ---
-
-# ## ✅ Benefits of this approach
-
-# | Feature                             | Handled?      |
-# | ----------------------------------- | ------------- |
-# | Dynamically detects text file types | ✅             |
-# | Skips or warns about binary files   | ✅             |
-# | Prevents huge prompt bloat          | ✅ (truncates) |
-# | Reusable across many tasks          | ✅             |
-# | Works for Markdown, CSV, JSON, etc  | ✅             |
-
-# ---
-
-# ## 🛑 What this won’t do
-
-# * It won’t **"understand" binary data** (like images or ZIPs) — but it **can** still mention them for awareness
-# * It doesn’t automatically wire files into the web app — the LLM needs to do that using the content you provide
-
-# ---
-
-# ## ✅ File types that are safe to pass directly to GPT
-
-# | Extension              | Can be safely passed to LLM? | Notes                               |
-# | ---------------------- | ---------------------------- | ----------------------------------- |
-# | `.md`                  | ✅ Yes                        | Markdown                            |
-# | `.csv`                 | ✅ Yes                        | Especially small tables             |
-# | `.json`                | ✅ Yes                        | Structured data                     |
-# | `.txt`                 | ✅ Yes                        | Plain text                          |
-# | `.py`                  | ✅ Yes                        | Code generation                     |
-# | `.html`                | ✅ Yes                        | Readable structure                  |
-# | `.png`, `.jpg`, `.zip` | ❌ No                         | Just describe, don't include base64 |
-
-# ---
-
-# ## ✅ Summary
-
-# Yes, you **can and should** build a generalized file processor to:
-
-# * Extract and safely summarize files
-# * Dynamically include their content in LLM prompts
-# * Allow your app to work for various file types, **even if unknown upfront**
-
-# Let me know if you want a version that also creates summaries/descriptions of unknown files, or stores the files for later use (like for displaying or serving in GitHub Pages).
+    except:
+        code="""<!DOCTYPE html>
+        <html><head><title>Fallback App</title></head><body><h1>Failed to generate app for round-2</h1></body></html>"""
+        return code

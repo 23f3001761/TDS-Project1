@@ -37,13 +37,15 @@ def enable_github_pages(repo_full_name):
     return r.json()
 
 def push_code(clone_url, local_dir):
-    print("Starting the code push")
+    print("Starting the code push",flush=True)
 
     with tempfile.TemporaryDirectory() as temp_dir:
         clone_path = os.path.join(temp_dir, "repo")
 
+        secure_clone_url = clone_url.replace("https://", f"https://{GITHUB_TOKEN}@")
+
         # Clone into unique subdirectory
-        run_shell(f"git clone {clone_url} {clone_path}")
+        run_shell(f"git clone {secure_clone_url} {clone_path}")
 
         # Copy generated code into clone directory
         run_shell(f"cp -r {local_dir}/* {clone_path}/")
@@ -52,7 +54,15 @@ def push_code(clone_url, local_dir):
         run_shell("git config user.name 'bot'", cwd=clone_path)
         run_shell("git config user.email 'bot@example.com'", cwd=clone_path)
         run_shell("git add .", cwd=clone_path)
-        run_shell("git commit -m 'init'", cwd=clone_path)
+        commit_output = run_shell("git commit -m 'init'", cwd=clone_path)
+
+        import re
+        match = re.search(r"\[.+ ([a-f0-9]{7,40})\]", commit_output)
+        commit_sha = match.group(1) if match else "unknown"
+        
         run_shell("git push", cwd=clone_path)
 
-    return run_shell("git rev-parse HEAD", cwd="repo_temp")
+        # return run_shell("git rev-parse HEAD", cwd="repo_temp")
+        
+        
+    return commit_sha
