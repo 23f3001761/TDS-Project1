@@ -7,7 +7,7 @@ This is a FastAPI + Docker-based project that automates the process of generatin
 
 This project builds web apps in 2 phases:
 
-### ✅ Build Phase (`/round1`)
+###  Build Phase (`/round1`)
 - Receives an app brief and secret
 - Verifies the request
 - Uses an LLM to generate app code
@@ -15,7 +15,7 @@ This project builds web apps in 2 phases:
 - Deploys the app to **GitHub Pages**
 - Sends repo metadata (repo URL, commit SHA, pages URL) to an **evaluation API**
 
-### 🔁 Revise Phase (`/round2`)
+###  Revise Phase (`/round2`)
 - Verifies a second request with the same secret
 - Updates the app based on a new brief
 - Re-deploys to GitHub Pages
