@@ -95,15 +95,10 @@ def process_request(req:AppRequest):
                 print("Sending brief without attachments")
                 files=generate_app_code(req.brief,None,image_present=False,image_data=[])
                 print("Received the response from the llm")
-                #files_txt,summary,files_binary=None,None,None
+                
 
             print("Starting the temp directory",flush=True)
-            # with tempfile.TemporaryDirectory() as temp_dir:
-            #     for name, content in files.items():
-            #         filepath = os.path.join(temp_dir, name)
-            #         os.makedirs(os.path.dirname(filepath), exist_ok=True)
-            #         with open(filepath, "wb") as f:
-            #             f.write(content)
+           
 
 
 
@@ -161,27 +156,6 @@ def process_request(req:AppRequest):
                     f.write(cleaned_code)
 
 
-
-
-
-            
-
-
-               # Write attachment text files (str → encoded as utf-8)
-                # for name, text_content in files_text.items():
-                #     filepath = os.path.join(temp_dir, name)
-                #     os.makedirs(os.path.dirname(filepath), exist_ok=True)
-                #     with open(filepath, "w", encoding="utf-8") as f:
-                #         f.write(text_content)
-
-                # Write attachment binary files (bytes)
-                # print("Writing the image file")
-                # if files_binary:
-                #     for name, binary_content in files_binary.items():
-                #         filepath = os.path.join(temp_dir, name)
-                #         os.makedirs(os.path.dirname(filepath), exist_ok=True)
-                #         with open(filepath, "wb") as f:
-                #             f.write(binary_content)
 
                 print("Writing attachments to temp dir")
                 if req.attachments:
@@ -437,13 +411,6 @@ def process_request(req:AppRequest):
             print(cleaned_code)
 
 
-            # decoded_html = cleaned_code.encode().decode("unicode_escape")
-            # soup = BeautifulSoup(decoded_html, "html.parser")
-            # pretty_html = soup.prettify()
-            # print(pretty_html)
-
-
-
 
 
             with tempfile.TemporaryDirectory() as temp_dir:
@@ -470,14 +437,7 @@ def process_request(req:AppRequest):
                             f.write(binary_content)
 
 
-            
-
-            # with tempfile.TemporaryDirectory() as temp_dir:
-            #     for name, content in updated_files.items():
-            #         filepath = os.path.join(temp_dir, name)
-            #         os.makedirs(os.path.dirname(filepath), exist_ok=True)
-            #         with open(filepath, "wb") as f:
-            #             f.write(content)
+        
 
                 print("Updating README.md",flush=True)
                 readme=generate_readme(brief=req.brief,round=req.round,task=req.task)

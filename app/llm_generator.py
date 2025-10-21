@@ -191,7 +191,7 @@ def revise_app_code(brief, file_paths, html_content,image_present,image_data,rep
         return html
 
 
-    #files_text, summary, files_binary = process_attachments(attachments)
+    
 
 
 
